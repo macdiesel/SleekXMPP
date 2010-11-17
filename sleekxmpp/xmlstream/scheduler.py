@@ -127,7 +127,7 @@ class Scheduler(object):
                         thread. Defaults to True.
         """
         if threaded:
-            self.thread = threading.Thread(name='sheduler_process',
+            self.thread = threading.Thread(name='scheduler_process',
                                            target=self._process)
             self.thread.start()
         else:

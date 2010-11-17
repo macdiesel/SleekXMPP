@@ -45,6 +45,9 @@ HANDLER_THREADS = 1
 # Flag indicating if the SSL library is available for use.
 SSL_SUPPORT = True
 
+#Delay/Wait time between checks to see if stop event is set
+WAIT_TIMEOUT = 1
+
 
 class RestartStream(Exception):
     """
@@ -334,11 +337,15 @@ class XMLStream(object):
         """
         logging.debug("reconnecting...")
         self.state.transition('connected', 'disconnected', wait=2.0,
-                              func=self._disconnect, args=(True,))
+                              func=self._disconnect, args=(False,))
+        time.sleep(1)
         logging.debug("connecting...")
-        return self.state.transition('disconnected', 'connected',
-                                     wait=2.0, func=self._connect)
-
+        retval = self.state.transition('disconnected', 'connected',
+                                       wait=2.0, func=self._connect)
+        if retval:
+            self.process(threaded=True)
+        return retval
+        
     def set_socket(self, socket, ignore=False):
         """
         Set the socket to use for the stream.
@@ -696,18 +703,17 @@ class XMLStream(object):
             except SystemExit:
                 logging.debug("SystemExit in _process")
                 self.stop.set()
+                self.scheduler.run = False
             except Socket.error:
                 logging.exception('Socket Error')
             except:
                 if not self.stop.isSet():
                     logging.exception('Connection error.')
             if not self.stop.isSet() and self.auto_reconnect:
-                self.reconnect()
+                self.disconnect(reconnect=True)
             else:
                 self.disconnect()
-                self.event_queue.put(('quit', None, None))
-        self.scheduler.run = False
-
+        
     def __read_xml(self):
         """
         Parse the incoming XML stream, raising stream events for
@@ -821,7 +827,7 @@ class XMLStream(object):
         try:
             while not self.stop.isSet():
                 try:
-                    event = self.event_queue.get(True, timeout=5)
+                    event = self.event_queue.get(True, timeout=WAIT_TIMEOUT)
                 except queue.Empty:
                     event = None
                 if event is None:
@@ -859,17 +865,14 @@ class XMLStream(object):
                         logging.exception(error_msg % str(func))
                         if hasattr(args[0], 'exception'):
                             args[0].exception(e)
-                elif etype == 'quit':
-                    logging.debug("Quitting event runner thread")
-                    return False
         except KeyboardInterrupt:
             logging.debug("Keyboard Escape Detected in _event_runner")
             self.disconnect()
-            return
         except SystemExit:
             self.disconnect()
-            self.event_queue.put(('quit', None, None))
-            return
+        #empty the queue
+        self.event_queue = queue.Queue()
+        return
 
     def _send_thread(self):
         """
@@ -881,7 +884,7 @@ class XMLStream(object):
                 if not self.session_started_event.isSet(): 
                     time.sleep(.1)
                 try:
-                    data = self.send_queue.get(True, 1)[1]
+                    data = self.send_queue.get(True, WAIT_TIMEOUT)[1]
                 except queue.Empty:
                     continue
                 logging.debug("SEND: %s" % data)
@@ -896,7 +899,6 @@ class XMLStream(object):
             return
         except SystemExit:
             self.disconnect()
-            self.event_queue.put(('quit', None, None))
             return
         
     def sendStreamPacket(self, data, block=False):
